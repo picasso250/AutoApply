@@ -9,15 +9,15 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog
 from queue import Queue, Empty
 
-# --- 新增 pystray, PIL 和 icoextract 相关的导入，并使用 print 进行依赖检查 ---
+# --- 新增 pystray, PIL 相关的导入，并使用 print 进行依赖检查 ---
+# icoextract 不再需要
 try:
     from pystray import Icon, Menu, MenuItem
     from PIL import Image, ImageDraw, ImageFont # Pillow 用于创建或加载图标
-    import icoextract # 用于从系统 DLL/EXE 中提取图标
 except ImportError:
     print(
-        "错误: 缺少必要的库。请安装 'pystray', 'Pillow' 和 'icoextract'。\n"
-        "请运行 'pip install pystray Pillow icoextract' 后再启动程序。",
+        "错误: 缺少必要的库。请安装 'pystray' 和 'Pillow'。\n"
+        "请运行 'pip install pystray Pillow' 后再启动程序。",
         file=sys.stderr
     )
     sys.exit(1)
@@ -49,7 +49,7 @@ def win32_askyesno(title, message):
 
 def create_default_icon():
     """
-    创建一个简单的默认图标 (PIL Image)，当无法加载系统图标时使用。
+    创建一个简单的默认图标 (PIL Image)。
     """
     width, height = 64, 64
     image = Image.new('RGBA', (width, height), (255, 255, 255, 0)) # 透明背景
@@ -70,36 +70,7 @@ def create_default_icon():
     draw.text((x, y), text, font=font, fill=(0, 0, 0, 255)) # 黑色文本
     return image
 
-def get_system_icon(filename, icon_index):
-    """
-    尝试从指定的系统文件 (DLL/EXE) 中提取图标。
-    返回 PIL.Image 对象或 None。
-    """
-    system_root = os.environ.get("SystemRoot", "C:\\Windows")
-    
-    # 尝试查找 System32 目录
-    file_path = os.path.join(system_root, "System32", filename)
-    if not os.path.exists(file_path):
-        # 如果 System32 中没有，尝试 SystemRoot (如 explorer.exe)
-        file_path = os.path.join(system_root, filename)
-
-    if not os.path.exists(file_path):
-        print(f"警告: 无法找到系统文件 '{filename}'。", file=sys.stderr)
-        return None
-
-    try:
-        extractor = icoextract.IconExtractor(file_path)
-        icon_data_stream = extractor.get_icon(icon_index)
-        pil_image = Image.open(icon_data_stream)
-        # 确保图标尺寸适中，例如调整到 64x64
-        if pil_image.width > 64 or pil_image.height > 64:
-            pil_image.thumbnail((64, 64), Image.Resampling.LANCZOS)
-        return pil_image
-    except IndexError:
-        print(f"警告: 文件 '{filename}' 不存在索引为 {icon_index} 的图标。", file=sys.stderr)
-    except Exception as e:
-        print(f"警告: 从 '{filename}' 提取图标 {icon_index} 时发生错误: {e}", file=sys.stderr)
-    return None
+# get_system_icon 函数已删除
 
 class ConfigManager:
     """
@@ -170,7 +141,7 @@ class ClipboardMonitor:
             win32con.HWND_MESSAGE, # hWndParent - **修正: 使用 HWND_MESSAGE 创建消息窗口**
             0, # hMenu
             wc.hInstance, # hInstance
-            None # lpParam - **修正: 将 None 改为 0**
+            None
         )
         win32gui.UpdateWindow(self.hwnd)
 
@@ -248,7 +219,7 @@ class AutoCodeApplier:
         self.root.withdraw() # 隐藏主窗口
         
         self.config_manager = ConfigManager()
-        # 修正: _get_or_set_root_folder_path 返回路径，然后赋值给 self.root_folder
+        # _get_or_set_root_folder_path 返回路径，然后赋值给 self.root_folder
         self.root_folder = self._get_or_set_root_folder_path() 
         
         self.clipboard_queue = Queue()
@@ -262,10 +233,9 @@ class AutoCodeApplier:
     def _setup_tray_icon(self):
         """
         设置系统托盘图标及其菜单。
+        现在始终使用默认图标。
         """
-        icon_image = get_system_icon("shell32.dll", 36) # 尝试获取 shell32.dll 的 36 号图标
-        if not icon_image:
-            icon_image = create_default_icon() # 如果获取失败，使用默认图标
+        icon_image = create_default_icon() # 始终使用默认图标
 
         menu = (
             MenuItem(f"项目根目录: {self.root_folder}", None, enabled=False), # 显示当前根目录，不可点击
