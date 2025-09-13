@@ -99,11 +99,19 @@ def display_icons():
             # 关键修正：将 BytesIO 流加载为 PIL Image 对象
             pil_image = Image.open(icon_data_stream)
 
+            # --- 新增：图片大小调整 ---
+            # 如果图片尺寸大于 64x64，则按比例缩小到 64x64
+            if pil_image.width > 64 or pil_image.height > 64:
+                # 使用 thumbnail 方法，它会保持图像的宽高比并调整图像大小
+                # Image.Resampling.LANCZOS 提供高质量的缩放
+                pil_image.thumbnail((64, 64), Image.Resampling.LANCZOS)
+            # --- 结束新增 ---
+
             found_any_icon = True
 
             # 将 PIL Image 转换为 Tkinter PhotoImage
             tk_image = ImageTk.PhotoImage(pil_image)
-            displayed_icons.append(tk_image) # 保持引用
+            displayed_icons.append(tk_image) # 保持引用，防止被垃圾回收
 
             # 创建 Label 来显示图标和序号
             label = ttk.Label(scroll_frame, image=tk_image, text=str(idx), compound="top")
