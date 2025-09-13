@@ -7,7 +7,21 @@ import time
 import ctypes
 import tkinter as tk
 from tkinter import messagebox, simpledialog
-from queue import Queue, Empty # 导入 Queue 和 Empty 异常
+from queue import Queue, Empty
+
+# --- 新增 pystray, PIL 和 icoextract 相关的导入，并使用 print 进行依赖检查 ---
+try:
+    from pystray import Icon, Menu, MenuItem
+    from PIL import Image, ImageDraw, ImageFont # Pillow 用于创建或加载图标
+    import icoextract # 用于从系统 DLL/EXE 中提取图标
+except ImportError:
+    print(
+        "错误: 缺少必要的库。请安装 'pystray', 'Pillow' 和 'icoextract'。\n"
+        "请运行 'pip install pystray Pillow icoextract' 后再启动程序。",
+        file=sys.stderr
+    )
+    sys.exit(1)
+
 
 import win32clipboard
 import win32con
@@ -33,6 +47,59 @@ def win32_askyesno(title, message):
     )
     return result == IDYES
 
+def create_default_icon():
+    """
+    创建一个简单的默认图标 (PIL Image)，当无法加载系统图标时使用。
+    """
+    width, height = 64, 64
+    image = Image.new('RGBA', (width, height), (255, 255, 255, 0)) # 透明背景
+    draw = ImageDraw.Draw(image)
+    try:
+        font = ImageFont.truetype("arial.ttf", 36)
+    except IOError:
+        font = ImageFont.load_default()
+
+    text = "AP" # AutoApply
+    text_bbox = draw.textbbox((0, 0), text, font=font)
+    text_width = text_bbox[2] - text_bbox[0]
+    text_height = text_bbox[3] - text_bbox[1]
+    
+    x = (width - text_width) / 2
+    y = (height - text_height) / 2
+    
+    draw.text((x, y), text, font=font, fill=(0, 0, 0, 255)) # 黑色文本
+    return image
+
+def get_system_icon(filename, icon_index):
+    """
+    尝试从指定的系统文件 (DLL/EXE) 中提取图标。
+    返回 PIL.Image 对象或 None。
+    """
+    system_root = os.environ.get("SystemRoot", "C:\\Windows")
+    
+    # 尝试查找 System32 目录
+    file_path = os.path.join(system_root, "System32", filename)
+    if not os.path.exists(file_path):
+        # 如果 System32 中没有，尝试 SystemRoot (如 explorer.exe)
+        file_path = os.path.join(system_root, filename)
+
+    if not os.path.exists(file_path):
+        print(f"警告: 无法找到系统文件 '{filename}'。", file=sys.stderr)
+        return None
+
+    try:
+        extractor = icoextract.IconExtractor(file_path)
+        icon_data_stream = extractor.get_icon(icon_index)
+        pil_image = Image.open(icon_data_stream)
+        # 确保图标尺寸适中，例如调整到 64x64
+        if pil_image.width > 64 or pil_image.height > 64:
+            pil_image.thumbnail((64, 64), Image.Resampling.LANCZOS)
+        return pil_image
+    except IndexError:
+        print(f"警告: 文件 '{filename}' 不存在索引为 {icon_index} 的图标。", file=sys.stderr)
+    except Exception as e:
+        print(f"警告: 从 '{filename}' 提取图标 {icon_index} 时发生错误: {e}", file=sys.stderr)
+    return None
 
 class ConfigManager:
     """
@@ -95,15 +162,15 @@ class ClipboardMonitor:
         class_atom = win32gui.RegisterClass(wc)
         
         self.hwnd = win32gui.CreateWindowEx(
-            0,
-            class_atom,
-            "ClipboardMonitor",
-            0,
-            0, 0, 0, 0,
-            0,
-            0,
-            wc.hInstance,
-            None
+            0, # dwExStyle
+            class_atom, # lpClassName
+            "ClipboardMonitor", # lpWindowName
+            0, # dwStyle (WS_POPUP is often 0, suitable for a message-only window)
+            0, 0, 0, 0, # x, y, nWidth, nHeight
+            win32con.HWND_MESSAGE, # hWndParent - **修正: 使用 HWND_MESSAGE 创建消息窗口**
+            0, # hMenu
+            wc.hInstance, # hInstance
+            None # lpParam - **修正: 将 None 改为 0**
         )
         win32gui.UpdateWindow(self.hwnd)
 
@@ -128,15 +195,15 @@ class ClipboardMonitor:
                     self.clipboard_queue.put(clipboard_data)
                 self.last_clipboard_data = clipboard_data
         except pywintypes.error as e:
-            print(f"[ERROR] pywintypes.error when accessing clipboard: {e}")
+            print(f"[ERROR] pywintypes.error when accessing clipboard: {e}", file=sys.stderr)
         except Exception as e:
-            print(f"[ERROR] General error accessing clipboard: {e}")
+            print(f"[ERROR] General error accessing clipboard: {e}", file=sys.stderr)
         finally:
             if opened:
                 try:
                     win32clipboard.CloseClipboard()
                 except Exception as e:
-                    print(f"[ERROR] Error closing clipboard in finally: {e}")
+                    print(f"[ERROR] Error closing clipboard in finally: {e}", file=sys.stderr)
 
 
     def start(self):
@@ -181,35 +248,128 @@ class AutoCodeApplier:
         self.root.withdraw() # 隐藏主窗口
         
         self.config_manager = ConfigManager()
-        self.root_folder = self._get_or_set_root_folder()
+        # 修正: _get_or_set_root_folder_path 返回路径，然后赋值给 self.root_folder
+        self.root_folder = self._get_or_set_root_folder_path() 
         
         self.clipboard_queue = Queue()
         self.monitor = ClipboardMonitor(self.clipboard_queue)
+        self.icon = None # 初始化托盘图标对象
+
+        self._setup_tray_icon() # 设置系统托盘图标，现在 self.root_folder 已经可用
 
         self.root.after(100, self._check_clipboard_queue)
 
-    def _get_or_set_root_folder(self):
+    def _setup_tray_icon(self):
         """
-        获取根目录，如果未设置则提示用户输入。
+        设置系统托盘图标及其菜单。
         """
-        root_folder = self.config_manager.get_root_folder()
-        while not root_folder or not os.path.isdir(root_folder):
-            root_folder = simpledialog.askstring(
+        icon_image = get_system_icon("shell32.dll", 36) # 尝试获取 shell32.dll 的 36 号图标
+        if not icon_image:
+            icon_image = create_default_icon() # 如果获取失败，使用默认图标
+
+        menu = (
+            MenuItem(f"项目根目录: {self.root_folder}", None, enabled=False), # 显示当前根目录，不可点击
+            MenuItem("修改根目录", self._modify_root_folder_action),
+            Menu.SEPARATOR,
+            MenuItem("退出", self._quit_application)
+        )
+        
+        self.icon = Icon(
+            'AutoCodeApplier',
+            icon_image,
+            hover_text=f"AutoCodeApplier - 根目录: {self.root_folder}",
+            menu=menu
+        )
+        self.icon.title = f"AutoCodeApplier - 根目录: {self.root_folder}"
+
+    def _update_tray_icon_status(self, new_root_folder_path):
+        """
+        更新托盘图标的标题、提示文本和菜单中的根目录显示。
+        """
+        if self.icon:
+            # 需要重新设置菜单以更新只读项的文本
+            menu = (
+                MenuItem(f"项目根目录: {new_root_folder_path}", None, enabled=False),
+                MenuItem("修改根目录", self._modify_root_folder_action),
+                Menu.SEPARATOR,
+                MenuItem("退出", self._quit_application)
+            )
+            self.icon.menu = menu
+            self.icon.title = f"AutoCodeApplier - 根目录: {new_root_folder_path}"
+            self.icon.tooltip = f"AutoCodeApplier - 根目录: {new_root_folder_path}"
+
+    def _modify_root_folder_action(self):
+        """
+        托盘菜单中“修改根目录”选项的回调函数。
+        """
+        # 在 Tkinter 主线程中执行对话框和更新逻辑
+        def prompt_and_update():
+            # _get_or_set_root_folder_path 会返回新的路径或旧路径（如果用户取消）
+            new_path = self._get_or_set_root_folder_path(force_prompt=True)
+            if new_path and new_path != self.root_folder: # 只有当路径实际改变时才更新
+                self.root_folder = new_path
+                self._update_tray_icon_status(self.root_folder)
+        
+        self.root.after(0, prompt_and_update)
+
+
+    def _quit_application(self, icon=None, item=None):
+        """
+        托盘菜单中“退出”选项的回调函数。
+        优雅地关闭所有组件。
+        """
+        print("收到退出指令...")
+        if self.monitor:
+            self.monitor.stop() # 停止剪贴板监听线程
+        if self.icon:
+            self.icon.stop() # 停止托盘图标线程
+        
+        # 确保在主线程中调用 Tkinter 的 quit 方法
+        self.root.after(0, self.root.quit)
+        print("应用程序已关闭。")
+
+    def _get_or_set_root_folder_path(self, force_prompt=False): # 重命名以强调它返回路径
+        """
+        获取根目录路径。如果未设置、无效或 force_prompt 为 True 则提示用户输入。
+        此方法始终返回一个有效的根目录路径（或在用户拒绝设置时退出程序）。
+        """
+        current_root_from_config = self.config_manager.get_root_folder()
+        
+        # 判断是否需要弹窗提示用户设置根目录
+        should_prompt = force_prompt or not current_root_from_config or not os.path.isdir(current_root_from_config)
+
+        if not should_prompt:
+            # 如果不需要弹窗，直接返回配置中已有的有效路径
+            return current_root_from_config
+
+        # 如果需要弹窗
+        while True:
+            # 为对话框提供初始值，优先使用当前配置的路径，否则使用当前工作目录
+            initial_path_for_dialog = current_root_from_config if current_root_from_config else os.getcwd()
+            
+            new_root_folder_input = simpledialog.askstring(
                 "配置根目录",
                 "请设置您的项目根目录路径：",
-                initialvalue=root_folder if root_folder else os.getcwd()
+                initialvalue=initial_path_for_dialog
             )
-            if root_folder:
-                root_folder = os.path.abspath(root_folder)
-                if not os.path.isdir(root_folder):
-                    messagebox.showwarning("路径无效", f"'{root_folder}' 不是一个有效的目录。请重新输入。")
-                    root_folder = None
+            
+            if new_root_folder_input:
+                new_root_folder_abs = os.path.abspath(new_root_folder_input)
+                if not os.path.isdir(new_root_folder_abs):
+                    messagebox.showwarning("路径无效", f"'{new_root_folder_abs}' 不是一个有效的目录。请重新输入。")
+                    current_root_from_config = new_root_folder_abs # 更新初始值以便下次循环使用
                 else:
-                    self.config_manager.set_root_folder(root_folder)
+                    self.config_manager.set_root_folder(new_root_folder_abs)
+                    messagebox.showinfo("根目录已设置", f"项目根目录已成功设置为: {new_root_folder_abs}")
+                    return new_root_folder_abs # 返回新的有效路径
             else:
-                messagebox.showerror("根目录未设置", "未设置项目根目录，程序将退出。")
-                sys.exit(1)
-        return root_folder
+                # 用户取消输入
+                if not current_root_from_config: # 如果从未成功设置过根目录，用户取消则退出程序
+                    messagebox.showerror("根目录未设置", "未设置项目根目录，程序将退出。")
+                    sys.exit(1)
+                else: # 如果之前已设置过有效根目录，用户取消则保留旧的设置
+                    messagebox.showinfo("取消操作", "未修改项目根目录，将继续使用现有设置。")
+                    return current_root_from_config # 返回旧的有效路径
 
     def _check_clipboard_queue(self):
         """
@@ -218,13 +378,14 @@ class AutoCodeApplier:
         try:
             clipboard_content = self.clipboard_queue.get_nowait()
             self._handle_clipboard_change(clipboard_content)
-        except Empty: # 明确捕获并忽略 queue.Empty 异常
-            pass
+        except Empty:
+            pass # 明确捕获并忽略 queue.Empty 异常
         except Exception as e:
             # 仅打印非 Empty 且非 Tkinter TclError 的异常
             if not isinstance(e, tk.TclError):
-                 print(f"[ERROR] Error in _check_clipboard_queue: {type(e).__name__}: {e}")
+                 print(f"[ERROR] Error in _check_clipboard_queue: {type(e).__name__}: {e}", file=sys.stderr)
         finally:
+            # 在主线程中调度下一次检查
             self.root.after(100, self._check_clipboard_queue)
 
     def _handle_clipboard_change(self, clipboard_content):
@@ -260,7 +421,7 @@ class AutoCodeApplier:
                     # 标准化现有文件内容的换行符
                     existing_content = existing_content.replace('\r\n', '\n').replace('\r', '\n')
                 except Exception as e:
-                    print(f"[WARNING] 无法读取文件 '{target_path}' 进行比较: {e}. 将视为新内容。")
+                    print(f"[WARNING] 无法读取文件 '{target_path}' 进行比较: {e}. 将视为新内容。", file=sys.stderr)
                     existing_content = None # 无法读取则视为不一致，强制写入
             
             if code_content == existing_content:
@@ -290,6 +451,7 @@ class AutoCodeApplier:
             f"注意：这将覆盖现有文件内容（如果文件已存在）。"
         )
         
+        # 使用 win32_askyesno 而不是 Tkinter 的 messagebox，因为 Tkinter 主循环可能专注于其他任务
         response = win32_askyesno("检测到代码块", prompt_message)
 
         if response:
@@ -300,6 +462,7 @@ class AutoCodeApplier:
                         f.write(file_info['code_content'])
                     print(f"代码已成功写入到: {file_info['target_path']}")
                 except Exception as e:
+                    # 使用 Tkinter 的 messagebox，因为根目录已设置，Tkinter 循环已运行
                     messagebox.showerror("写入失败", f"无法将代码写入文件 '{file_info['target_path']}': {e}")
         else:
             print("用户取消了所有写入操作。")
@@ -310,22 +473,31 @@ class AutoCodeApplier:
         print(f"当前项目根目录: {self.root_folder}")
         print("剪贴板监控已启动，请复制包含 `---FILE: <filename>---` 模式的代码。")
         self.monitor.start()
+
+        # 在单独的线程中运行 pystray icon，因为它也有自己的阻塞事件循环
+        tray_thread = threading.Thread(target=self.icon.run, daemon=True)
+        tray_thread.start()
+
         try:
-            self.root.mainloop()
+            self.root.mainloop() # Tkinter 主循环在主线程运行
         except KeyboardInterrupt:
             print("程序即将退出...")
         finally:
             self.monitor.stop()
+            if self.icon:
+                self.icon.stop() # 确保在退出时停止托盘图标
+            print("应用程序已完全关闭。")
 
 if __name__ == '__main__':
+    # win32clipboard, win32gui, pywintypes 的检查保留
     try:
         import win32clipboard
         import win32gui
         import pywintypes
     except ImportError:
-        messagebox.showerror(
-            "缺少依赖",
-            "需要安装 'pywin32' 库。请运行 'pip install pywin32' 后再启动程序。"
+        print(
+            "错误: 缺少 'pywin32' 库。请运行 'pip install pywin32' 后再启动程序。",
+            file=sys.stderr
         )
         sys.exit(1)
 
