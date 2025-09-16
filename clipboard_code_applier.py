@@ -2,7 +2,7 @@ import os
 import re
 import sys
 import threading
-import configparser
+import json # 导入 json 模块
 import time
 import ctypes
 import tkinter as tk
@@ -74,42 +74,54 @@ def create_default_icon():
 
 class ConfigManager:
     """
-    管理配置文件 (config.ini) 的读取和写入。
+    管理配置文件 (config.json) 的读取和写入。
     用于存储根目录等配置信息。
     """
-    def __init__(self, config_file='config.ini'):
+    def __init__(self, config_file='config.json'): # 更改为 config.json
         self.config_file = config_file
-        self.config = configparser.ConfigParser()
-        self._load_config()
+        self.config_data = {} # 存储 JSON 数据字典
+        self._load_config() 
 
     def _load_config(self):
-        """加载配置文件，如果不存在则创建。"""
-        if os.path.exists(self.config_file):
-            self.config.read(self.config_file, encoding='utf-8')
-        else:
-            self._create_default_config()
+        """加载配置文件，如果不存在则 config_data 将为空字典。"""
+        try:
+            with open(self.config_file, 'r', encoding='utf-8') as f:
+                self.config_data = json.load(f)
+        except FileNotFoundError:
+            self.config_data = {} # 文件不存在，初始化为空字典
+        except json.JSONDecodeError as e:
+            print(f"[WARNING] 配置文件 '{self.config_file}' 格式错误: {e}. 将使用空配置。", file=sys.stderr)
+            self.config_data = {} # JSON 格式错误，初始化为空字典
+        except Exception as e:
+            print(f"[WARNING] 无法加载配置文件 '{self.config_file}': {e}", file=sys.stderr)
+            self.config_data = {}
 
-    def _create_default_config(self):
-        """创建默认配置文件。"""
-        self.config['Settings'] = {'root_folder': ''}
+    def get_root_folder(self):
+        """获取配置的根目录。如果不存在，则返回空字符串。"""
+        # 根据约定好的 JSON 结构 {"root_folder": "..."}
+        return self.config_data.get('root_folder', '').strip()
+
+    def set_root_folder(self, path):
+        """设置根目录并保存。"""
+        self.config_data['root_folder'] = path
         self._save_config()
 
     def _save_config(self):
         """保存配置文件。"""
+        # 确保配置文件目录存在
+        config_dir = os.path.dirname(self.config_file)
+        if config_dir and not os.path.exists(config_dir):
+            try:
+                os.makedirs(config_dir, exist_ok=True)
+            except OSError as e:
+                messagebox.showerror("配置错误", f"无法创建配置目录 '{config_dir}': {e}")
+                return
+
         try:
             with open(self.config_file, 'w', encoding='utf-8') as f:
-                self.config.write(f)
+                json.dump(self.config_data, f, indent=2, ensure_ascii=False) # 写入 JSON，并进行2空格缩进
         except IOError as e:
             messagebox.showerror("配置错误", f"无法保存配置文件 '{self.config_file}': {e}")
-
-    def get_root_folder(self):
-        """获取配置的根目录。"""
-        return self.config.get('Settings', 'root_folder', fallback='').strip()
-
-    def set_root_folder(self, path):
-        """设置根目录并保存。"""
-        self.config['Settings']['root_folder'] = path
-        self._save_config()
 
 class ClipboardMonitor:
     """
@@ -136,7 +148,7 @@ class ClipboardMonitor:
             0, # dwExStyle
             class_atom, # lpClassName
             "ClipboardMonitor", # lpWindowName
-            0, # dwStyle (WS_POPUP is often 0, suitable for a message-only window)
+            0, # dwStyle (WS_POPUP is often 0, suitable for a message-only window) DO NOT delete this, it is important
             0, 0, 0, 0, # x, y, nWidth, nHeight
             win32con.HWND_MESSAGE, # hWndParent - **修正: 使用 HWND_MESSAGE 创建消息窗口**
             0, # hMenu
@@ -218,9 +230,14 @@ class AutoCodeApplier:
         self.root = tk.Tk()
         self.root.withdraw() # 隐藏主窗口
         
-        self.config_manager = ConfigManager()
-        # _get_or_set_root_folder_path 返回路径，然后赋值给 self.root_folder
-        self.root_folder = self._get_or_set_root_folder_path() 
+        # 始终使用固定的 config.json 文件路径
+        current_script_dir = os.path.dirname(os.path.abspath(__file__))
+        config_file_path = os.path.join(current_script_dir, 'config.json') # 更改为 config.json
+        self.config_manager = ConfigManager(config_file=config_file_path)
+        
+        # 初始获取根目录。如果 config.json 中没有，会提示用户设置。
+        self.root_folder = self._get_or_set_root_folder_path()
+        self._last_loaded_root_folder = self.root_folder # 用于检测 config.json 中的变化
         
         self.clipboard_queue = Queue()
         self.monitor = ClipboardMonitor(self.clipboard_queue)
@@ -228,7 +245,9 @@ class AutoCodeApplier:
 
         self._setup_tray_icon() # 设置系统托盘图标，现在 self.root_folder 已经可用
 
+        # 调度定时任务
         self.root.after(100, self._check_clipboard_queue)
+        self.root.after(1000, self._schedule_root_folder_check) # 每秒检查一次根目录配置
 
     def _setup_tray_icon(self):
         """
@@ -279,6 +298,7 @@ class AutoCodeApplier:
             if new_path and new_path != self.root_folder: # 只有当路径实际改变时才更新
                 self.root_folder = new_path
                 self._update_tray_icon_status(self.root_folder)
+                self._last_loaded_root_folder = self.root_folder # 更新最后加载的根目录
         
         self.root.after(0, prompt_and_update)
 
@@ -306,6 +326,7 @@ class AutoCodeApplier:
         current_root_from_config = self.config_manager.get_root_folder()
         
         # 判断是否需要弹窗提示用户设置根目录
+        # 如果 config.json 中的路径无效，或者强制提示，则需要弹窗
         should_prompt = force_prompt or not current_root_from_config or not os.path.isdir(current_root_from_config)
 
         if not should_prompt:
@@ -319,7 +340,7 @@ class AutoCodeApplier:
             
             new_root_folder_input = simpledialog.askstring(
                 "配置根目录",
-                "请设置您的项目根目录路径：",
+                "请设置您的项目根目录路径：\n\n您也可以在VS Code扩展'LLM Code Copier'中配置'AutoApplyConfigFile'，使其自动同步。",
                 initialvalue=initial_path_for_dialog
             )
             
@@ -357,6 +378,46 @@ class AutoCodeApplier:
         finally:
             # 在主线程中调度下一次检查
             self.root.after(100, self._check_clipboard_queue)
+
+    def _schedule_root_folder_check(self):
+        """
+        调度周期性检查根目录配置的任务。
+        """
+        self._check_and_update_root_folder_from_config()
+        self.root.after(1000, self._schedule_root_folder_check) # 每秒再次调度自己
+
+    def _check_and_update_root_folder_from_config(self):
+        """
+        重新加载 config.json，并检查 root_folder 是否发生变化。
+        如果发生变化，则更新当前根目录并刷新托盘图标。
+        """
+        try:
+            self.config_manager._load_config() # 重新从文件加载配置
+            new_root_folder = self.config_manager.get_root_folder()
+            
+            if new_root_folder and os.path.isdir(new_root_folder) and new_root_folder != self._last_loaded_root_folder:
+                # 只有当新路径有效且与上次加载的不同时才更新
+                self.root_folder = new_root_folder
+                self._last_loaded_root_folder = new_root_folder
+                self._update_tray_icon_status(self.root_folder)
+                print(f"[INFO] 项目根目录已自动更新为: {self.root_folder}")
+            elif not new_root_folder or not os.path.isdir(new_root_folder):
+                # 如果 config.json 中的路径无效或为空，并且当前程序持有的 root_folder 也无效，
+                # 则可以考虑弹窗提示用户，但为了不打扰用户，这里只打印警告。
+                # 如果之前有效，现在无效，则保持旧的有效路径不变。
+                if self.root_folder and not os.path.isdir(self.root_folder):
+                     print(f"[WARNING] config.json 中的根目录 '{new_root_folder}' 无效，或当前 '{self.root_folder}' 已失效。请手动修改或通过VS Code扩展重新设置。", file=sys.stderr)
+                     # 此时可以选择让用户重新设置，但为了避免频繁弹窗，目前只警告
+                elif not self.root_folder and new_root_folder and os.path.isdir(new_root_folder):
+                    # config.json 之前为空或无效，现在有有效值了
+                    self.root_folder = new_root_folder
+                    self._last_loaded_root_folder = new_root_folder
+                    self._update_tray_icon_status(self.root_folder)
+                    print(f"[INFO] 项目根目录已从空值自动更新为: {self.root_folder}")
+
+        except Exception as e:
+            print(f"[ERROR] 检查并更新根目录时发生错误: {type(e).__name__}: {e}", file=sys.stderr)
+
 
     def _handle_clipboard_change(self, clipboard_content):
         """
