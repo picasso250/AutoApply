@@ -220,8 +220,8 @@ class AutoCodeApplier:
     """
     # 新的 CLIPBOARD_PATTERN：匹配 Markdown 风格的元数据标题和代码块
     CLIPBOARD_PATTERN = re.compile(
-        # 匹配元数据标题行：#### file: <path/filename.ext> (OVERWRITE|APPEND)
-        r"^####\s*file:\s*(?P<filename>.*?)\s*\((?P<operation>OVERWRITE|APPEND)\)\s*$"
+        # 匹配元数据标题行：#### file: <path/filename.ext> (OVERWRITE|APPEND|DELETE)
+        r"^####\s*file:\s*(?P<filename>.*?)\s*\((?P<operation>OVERWRITE|APPEND|DELETE)\)\s*$"
         r"\n^\s*```(?P<language>\w*)?\s*$" # 匹配代码块起始：```<language>
         r"\n(?P<content>.*?)"              # 懒惰匹配实际代码内容
         r"^\s*```\s*$",                    # 匹配代码块结束：```
@@ -424,7 +424,7 @@ class AutoCodeApplier:
     def _handle_clipboard_change(self, clipboard_content):
         """
         处理剪贴板内容变化的逻辑，现在支持一次性确认多个文件块的写入，
-        并在写入前检查内容是否与现有文件一致。
+        并在写入前检查内容是否与现有文件一致，并增加了追加和删除操作。
         """
         if not clipboard_content:
             return
@@ -435,80 +435,134 @@ class AutoCodeApplier:
             return
 
         files_to_write = []
+        files_to_delete = []
         prompt_details = []
 
         for match in matches:
             filename = match.group('filename').strip()
-            # operation_type = match.group('operation').strip() # 如果将来需要处理 APPEND，这里可用
-
-            # `content` 现在会直接捕获代码块的内部文本，不包含 ```
-            code_content = match.group('content').strip()
+            operation_type = match.group('operation').strip().upper() # 统一转换为大写以便比较
+            code_content_raw = match.group('content').strip()
             # 标准化剪贴板内容的换行符
-            code_content = code_content.replace('\r\n', '\n').replace('\r', '\n')
+            code_content_normalized = code_content_raw.replace('\r\n', '\n').replace('\r', '\n')
             
             target_path = os.path.join(self.root_folder, filename)
             target_dir = os.path.dirname(target_path)
 
-            existing_content = None
-            if os.path.exists(target_path) and os.path.isfile(target_path):
-                try:
-                    with open(target_path, 'r', encoding='utf-8') as f:
-                        existing_content = f.read()
-                    # 标准化现有文件内容的换行符
-                    existing_content = existing_content.replace('\r\n', '\n').replace('\r', '\n')
-                except Exception as e:
-                    print(f"[WARNING] 无法读取文件 '{target_path}' 进行比较: {e}. 将视为新内容。", file=sys.stderr)
-                    existing_content = None # 无法读取则视为不一致，强制写入
+            # --- 处理 DELETE 操作 ---
+            if operation_type == "DELETE":
+                if os.path.exists(target_path):
+                    files_to_delete.append(target_path)
+                    prompt_details.append(f"- '{filename}' (删除, 路径: '{target_path}')")
+                else:
+                    print(f"[INFO] 文件 '{filename}' 不存在，跳过删除操作。")
+                    prompt_details.append(f"- '{filename}' (删除 - 文件不存在，已跳过)")
+                continue # 完成此匹配项的处理，进入下一个匹配
+
+            # --- 处理 OVERWRITE 和 APPEND 操作 ---
+            elif operation_type in ["OVERWRITE", "APPEND"]:
+                existing_content = ""
+                file_exists = os.path.exists(target_path) and os.path.isfile(target_path)
+
+                if file_exists:
+                    try:
+                        with open(target_path, 'r', encoding='utf-8') as f:
+                            existing_content = f.read().replace('\r\n', '\n').replace('\r', '\n')
+                    except Exception as e:
+                        print(f"[WARNING] 无法读取文件 '{target_path}' 进行比较/追加: {e}. 将视为新内容或空内容。", file=sys.stderr)
+                        existing_content = "" # 无法读取，视为文件不存在或内容为空
+                
+                content_to_write = code_content_normalized
+                status = ""
+
+                if operation_type == "OVERWRITE":
+                    # 在比较前，对现有文件内容和剪贴板内容都执行 strip()
+                    if file_exists and code_content_normalized == existing_content.strip():
+                        print(f"文件 '{filename}' (OVERWRITE) 内容与现有文件一致，跳过写入。")
+                        continue # 内容一致，跳过此文件
+                    status = "更新" if file_exists else "创建"
+
+                elif operation_type == "APPEND":
+                    # 如果文件存在，新内容是现有内容加上要追加的内容
+                    if file_exists:
+                        # 确保追加的内容前有换行符，除非现有文件为空
+                        content_to_write = existing_content + ("\n" if existing_content and not existing_content.endswith('\n') else "") + code_content_normalized
+                        # 检查追加后内容是否与现有内容相同（如果追加的是空内容，或者现有文件已经包含该内容）
+                        if content_to_write.strip() == existing_content.strip():
+                            print(f"文件 '{filename}' (APPEND) 内容追加后与现有文件一致，跳过写入。")
+                            continue
+                    else: # 文件不存在，APPEND 行为等同于 OVERWRITE (创建)
+                        status = "创建并写入"
+                    status = "追加" if file_exists else "创建并写入"
+                
+                files_to_write.append({
+                    'filename': filename,
+                    'code_content': content_to_write,
+                    'target_path': target_path,
+                    'target_dir': target_dir,
+                    'operation': operation_type # 用于提示和日志
+                })
+                prompt_details.append(f"- '{filename}' ({status}, 将{operation_type.lower()}到: '{target_path}')")
             
-            # 在比较前，对现有文件内容和剪贴板内容都执行 strip()
-            if existing_content is not None and code_content == existing_content.strip(): # 这里只对existing_content strip，因为code_content已经处理过了
-                print(f"文件 '{filename}' 内容与现有文件一致，跳过写入。")
-                continue # 内容一致，跳过此文件
-            
-            files_to_write.append({
-                'filename': filename,
-                'code_content': code_content,
-                'target_path': target_path,
-                'target_dir': target_dir
-            })
-            # 如果是新文件或内容不一致，才加入提示列表
-            status = "更新" if existing_content is not None else "创建"
-            prompt_details.append(f"- '{filename}' ({status}, 将写入到: '{target_path}')")
-        
-        # 如果没有文件需要写入，则不弹出提示框
-        if not files_to_write:
-            print("剪贴板中检测到的所有代码块内容均与现有文件一致，无需写入。")
+            else:
+                print(f"[WARNING] 检测到文件 '{filename}' 的未知操作类型 '{operation_type}'，跳过此代码块。", file=sys.stderr)
+                continue
+
+
+        # 如果没有文件需要写入或删除，则不弹出提示框
+        if not files_to_write and not files_to_delete:
+            print("剪贴板中检测到的所有代码块内容均与现有文件一致，或操作被跳过，无需处理。")
             return
 
-        prompt_message = (
-            f"在剪贴板中检测到 {len(files_to_write)} 个代码块，其中部分内容与现有文件不一致或为新文件。\n"
-            f"是否将它们写入到您的项目根目录 '{self.root_folder}' 下？\n\n"
-            f"以下文件将被处理：\n"
-            f"{' \n'.join(prompt_details)}\n\n"
-            f"注意：这将覆盖现有文件内容（如果文件已存在）。"
-        )
+        # 构建提示消息
+        prompt_message_parts = [
+            f"在剪贴板中检测到 {len(files_to_write) + len(files_to_delete)} 个操作请求。\n"
+            f"是否执行这些操作到您的项目根目录 '{self.root_folder}' 下？\n"
+        ]
+        if prompt_details:
+            prompt_message_parts.append(f"\n以下操作将被执行：\n{' \n'.join(prompt_details)}\n")
         
-        # 使用 win32_askyesno 而不是 Tkinter 的 messagebox，因为 Tkinter 主循环可能专注于其他任务
-        response = win32_askyesno("检测到代码块", prompt_message)
+        prompt_message_parts.append("\n注意：")
+        if any(f['operation'] == "OVERWRITE" for f in files_to_write):
+            prompt_message_parts.append(" - 'OVERWRITE' 操作将覆盖现有文件内容。")
+        if any(f['operation'] == "APPEND" for f in files_to_write):
+            prompt_message_parts.append(" - 'APPEND' 操作将追加内容到现有文件末尾。")
+        if files_to_delete:
+            prompt_message_parts.append(" - 'DELETE' 操作将删除指定文件。")
+        
+        prompt_message = "".join(prompt_message_parts)
+        
+        # 使用 win32_askyesno 而不是 Tkinter 的 messagebox
+        response = win32_askyesno("检测到文件操作请求", prompt_message)
 
         if response:
+            # 执行写入/追加操作
             for file_info in files_to_write:
                 try:
                     os.makedirs(file_info['target_dir'], exist_ok=True)
                     with open(file_info['target_path'], 'w', encoding='utf-8') as f:
                         f.write(file_info['code_content'])
-                    print(f"代码已成功写入到: {file_info['target_path']}")
+                    print(f"文件 '{file_info['target_path']}' 已成功 {file_info['operation'].lower()}。")
                 except Exception as e:
-                    # 使用 Tkinter 的 messagebox，因为根目录已设置，Tkinter 循环已运行
-                    messagebox.showerror("写入失败", f"无法将代码写入文件 '{file_info['target_path']}': {e}")
+                    messagebox.showerror(f"{file_info['operation']}失败", f"无法 {file_info['operation'].lower()} 文件 '{file_info['target_path']}': {e}")
+            
+            # 执行删除操作
+            for file_path in files_to_delete:
+                try:
+                    if os.path.exists(file_path): # 再次检查文件是否存在，以防并发操作
+                        os.remove(file_path)
+                        print(f"文件 '{file_path}' 已成功删除。")
+                    else:
+                        print(f"尝试删除的文件 '{file_path}' 不存在，已跳过。")
+                except Exception as e:
+                    messagebox.showerror("删除失败", f"无法删除文件 '{file_path}': {e}")
         else:
-            print("用户取消了所有写入操作。")
+            print("用户取消了所有操作。")
 
 
     def run(self):
         """启动应用程序。"""
         print(f"当前项目根目录: {self.root_folder}")
-        print("剪贴板监控已启动，请复制包含 `---FILE: <filename>---` 模式的代码。")
+        print("剪贴板监控已启动，请复制包含 Markdown 格式的指令。")
         self.monitor.start()
 
         # 在单独的线程中运行 pystray icon，因为它也有自己的阻塞事件循环
