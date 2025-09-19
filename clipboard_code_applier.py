@@ -456,8 +456,8 @@ class AutoCodeApplier:
                     existing_content = None # 无法读取则视为不一致，强制写入
             
             # --- MODIFICATION START ---
-            # 在比较前，对现有文件内容也执行 strip()，并处理 existing_content 为 None 的情况
-            if existing_content is not None and code_content == existing_content.strip():
+            # 在比较前，对现有文件内容和剪贴板内容都执行 strip()
+            if existing_content is not None and code_content.strip() == existing_content.strip():
             # --- MODIFICATION END ---
                 print(f"文件 '{filename}' 内容与现有文件一致，跳过写入。")
                 continue # 内容一致，跳过此文件
