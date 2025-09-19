@@ -219,11 +219,18 @@ class AutoCodeApplier:
     主应用程序逻辑，处理剪贴板内容，模式匹配，用户交互和文件写入。
     """
     CLIPBOARD_PATTERN = re.compile(
-        r"---FILE:\s*(?P<filename>[^ \n]+?)---\s*\n"
-        r"```(?P<language>\w*)?\s*\n"
-        r"(?P<content>.*?)\n"
-        r"```",
-        re.DOTALL
+        r"^---\s*$"  # 匹配 YAML Front Matter 的起始 '---'
+        # 使用零宽断言确保 'file' 和 'operation' 字段存在，且顺序不限
+        r"(?=.*^\s*file:\s*(?P<file>[^\r\n]+))"
+        r"(?=.*^\s*operation:\s*(?P<operation>[^\r\n]+))"
+        # 懒惰匹配 YAML Front Matter 内部的所有内容，直到第二个 '---'
+        r".*?"
+        r"^\s*---\s*$"  # 匹配 YAML Front Matter 的结束 '---'
+        # 匹配可选的换行符，然后懒惰匹配文件内容
+        r"\n?(?P<content>.*?)"
+        # 匹配独立一行的代码块结束符 '```'
+        r"^\s*```\s*$",
+        re.MULTILINE | re.DOTALL
     )
 
     def __init__(self):
@@ -436,8 +443,13 @@ class AutoCodeApplier:
         prompt_details = []
 
         for match in matches:
-            filename = match.group('filename')
-            code_content = match.group('content').strip()
+            filename = match.group('file').strip()
+            # 获取原始内容，现在正则表达式已经确保了 '```' 不会被包含在 content 组中
+            code_content = match.group('content') 
+            
+            # 移除所有前导/尾随空格和换行符
+            code_content = code_content.strip()
+            
             # 标准化剪贴板内容的换行符
             code_content = code_content.replace('\r\n', '\n').replace('\r', '\n')
             
@@ -455,10 +467,8 @@ class AutoCodeApplier:
                     print(f"[WARNING] 无法读取文件 '{target_path}' 进行比较: {e}. 将视为新内容。", file=sys.stderr)
                     existing_content = None # 无法读取则视为不一致，强制写入
             
-            # --- MODIFICATION START ---
             # 在比较前，对现有文件内容和剪贴板内容都执行 strip()
-            if existing_content is not None and code_content.strip() == existing_content.strip():
-            # --- MODIFICATION END ---
+            if existing_content is not None and code_content == existing_content.strip(): # 这里只对existing_content strip，因为code_content已经处理过了
                 print(f"文件 '{filename}' 内容与现有文件一致，跳过写入。")
                 continue # 内容一致，跳过此文件
             
