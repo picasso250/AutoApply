@@ -218,18 +218,13 @@ class AutoCodeApplier:
     """
     主应用程序逻辑，处理剪贴板内容，模式匹配，用户交互和文件写入。
     """
+    # 新的 CLIPBOARD_PATTERN：匹配 Markdown 风格的元数据标题和代码块
     CLIPBOARD_PATTERN = re.compile(
-        r"^---\s*$"  # 匹配 YAML Front Matter 的起始 '---'
-        # 使用零宽断言确保 'file' 和 'operation' 字段存在，且顺序不限
-        r"(?=.*^\s*file:\s*(?P<file>[^\r\n]+))"
-        r"(?=.*^\s*operation:\s*(?P<operation>[^\r\n]+))"
-        # 懒惰匹配 YAML Front Matter 内部的所有内容，直到第二个 '---'
-        r".*?"
-        r"^\s*---\s*$"  # 匹配 YAML Front Matter 的结束 '---'
-        # 匹配可选的换行符，然后懒惰匹配文件内容
-        r"\n?(?P<content>.*?)"
-        # 匹配独立一行的代码块结束符 '```'
-        r"^\s*```\s*$",
+        # 匹配元数据标题行：#### file: <path/filename.ext> (OVERWRITE|APPEND)
+        r"^####\s*file:\s*(?P<filename>.*?)\s*\((?P<operation>OVERWRITE|APPEND)\)\s*$"
+        r"\n^\s*```(?P<language>\w*)?\s*$" # 匹配代码块起始：```<language>
+        r"\n(?P<content>.*?)"              # 懒惰匹配实际代码内容
+        r"^\s*```\s*$",                    # 匹配代码块结束：```
         re.MULTILINE | re.DOTALL
     )
 
@@ -443,13 +438,11 @@ class AutoCodeApplier:
         prompt_details = []
 
         for match in matches:
-            filename = match.group('file').strip()
-            # 获取原始内容，现在正则表达式已经确保了 '```' 不会被包含在 content 组中
-            code_content = match.group('content') 
-            
-            # 移除所有前导/尾随空格和换行符
-            code_content = code_content.strip()
-            
+            filename = match.group('filename').strip()
+            # operation_type = match.group('operation').strip() # 如果将来需要处理 APPEND，这里可用
+
+            # `content` 现在会直接捕获代码块的内部文本，不包含 ```
+            code_content = match.group('content').strip()
             # 标准化剪贴板内容的换行符
             code_content = code_content.replace('\r\n', '\n').replace('\r', '\n')
             
