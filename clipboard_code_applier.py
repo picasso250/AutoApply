@@ -92,7 +92,7 @@ class AutoCodeApplier:
         r"\n^\s*```(?P<language>\w*)?\s*$" # 匹配代码块起始：```<language>
         r"\n(?P<content>.*?)"              # 懒惰匹配实际代码内容
         r"^\s*```\s*$",                    # 匹配代码块结束：```
-        re.MULTILINE | re.DOTALL
+        re.MULTILINE | re.DOTALL | re.IGNORECASE # 添加 re.IGNORECASE
     )
 
     def __init__(self):
