@@ -18,7 +18,7 @@ class ClipboardMonitor:
     def __init__(self, clipboard_queue: Queue):
         self.clipboard_queue = clipboard_queue
         self.hwnd = None
-        self.last_clipboard_data = None
+        self.last_clipboard_data = None # 用于存储上一次放入队列的内容
         self._stop_event = threading.Event()
 
     def _create_window(self):
@@ -59,11 +59,20 @@ class ClipboardMonitor:
             opened = True
             if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
                 clipboard_data = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-                if clipboard_data:
+                
+                # --- BUG 修复：增加内容比对逻辑 ---
+                # 只有当新获取的内容与上一次成功放入队列的内容不同时，才进行处理
+                if clipboard_data and clipboard_data != self.last_clipboard_data:
                     self.clipboard_queue.put(clipboard_data)
-                self.last_clipboard_data = clipboard_data
+                    # 只有在成功放入队列后，才更新 last_clipboard_data
+                    self.last_clipboard_data = clipboard_data
+                    
         except pywintypes.error as e:
-            print(f"[ERROR] pywintypes.error when accessing clipboard: {e}", file=sys.stderr)
+            # 忽略 "cannot open clipboard" (error 5) 这类常见、无害的错误
+            if e.winerror == 5:
+                pass
+            else:
+                print(f"[ERROR] pywintypes.error when accessing clipboard: {e}", file=sys.stderr)
         except Exception as e:
             print(f"[ERROR] General error accessing clipboard: {e}", file=sys.stderr)
         finally:
