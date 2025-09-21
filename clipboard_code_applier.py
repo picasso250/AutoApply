@@ -220,7 +220,8 @@ class AutoCodeApplier:
                     current_root_from_config = new_root_folder_abs # 更新初始值以便下次循环使用
                 else:
                     self.config_manager.set_root_folder(new_root_folder_abs)
-                    messagebox.showinfo("根目录已设置", f"项目根目录已成功设置为: {new_root_folder_abs}")
+                    # 移除成功设置时的弹窗
+                    # messagebox.showinfo("根目录已设置", f"项目根目录已成功设置为: {new_root_folder_abs}") 
                     return new_root_folder_abs # 返回新的有效路径
             else:
                 # 用户取消输入
@@ -228,7 +229,8 @@ class AutoCodeApplier:
                     messagebox.showerror("根目录未设置", "未设置项目根目录，程序将退出。")
                     sys.exit(1)
                 else: # 如果之前已设置过有效根目录，用户取消则保留旧的设置
-                    messagebox.showinfo("取消操作", "未修改项目根目录，将继续使用现有设置。")
+                    # 移除取消操作时的弹窗
+                    # messagebox.showinfo("取消操作", "未修改项目根目录，将继续使用现有设置。")
                     return current_root_from_config # 返回旧的有效路径
 
     def _check_clipboard_queue(self):
