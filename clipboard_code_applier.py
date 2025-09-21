@@ -2,15 +2,14 @@ import os
 import re
 import sys
 import threading
-import json # 导入 json 模块
+# import json # 用户指示不删除此导入，即使 ConfigManager 已移出。
 import time
 import ctypes
 import tkinter as tk
 from tkinter import messagebox, simpledialog
-from queue import Queue, Empty
+from queue import Queue, Empty # Queue, Empty 仍然需要
 
 # --- 新增 pystray, PIL 相关的导入，并使用 print 进行依赖检查 ---
-# icoextract 不再需要
 try:
     from pystray import Icon, Menu, MenuItem
     from PIL import Image, ImageDraw, ImageFont # Pillow 用于创建或加载图标
@@ -23,10 +22,16 @@ except ImportError:
     sys.exit(1)
 
 
-import win32clipboard
-import win32con
-import win32gui
-import pywintypes
+import win32clipboard # 仍需用于 pywin32 依赖检查
+import win32con # 仍需用于 pywin32 依赖检查
+import win32gui # 仍需用于 pywin32 依赖检查
+import pywintypes # 仍需用于 pywin32 依赖检查
+
+# 从新文件导入 ConfigManager
+from config_manager import ConfigManager
+# 从新文件导入 ClipboardMonitor
+from clipboard_monitor import ClipboardMonitor
+
 
 # MessageBoxW Constants
 MB_YESNO = 0x00000004
@@ -72,146 +77,8 @@ def create_default_icon():
 
 # get_system_icon 函数已删除
 
-class ConfigManager:
-    """
-    管理配置文件 (config.json) 的读取和写入。
-    用于存储根目录等配置信息。
-    """
-    def __init__(self, config_file='config.json'): # 更改为 config.json
-        self.config_file = config_file
-        self.config_data = {} # 存储 JSON 数据字典
-        self._load_config() 
-
-    def _load_config(self):
-        """加载配置文件，如果不存在则 config_data 将为空字典。"""
-        try:
-            with open(self.config_file, 'r', encoding='utf-8') as f:
-                self.config_data = json.load(f)
-        except FileNotFoundError:
-            self.config_data = {} # 文件不存在，初始化为空字典
-        except json.JSONDecodeError as e:
-            print(f"[WARNING] 配置文件 '{self.config_file}' 格式错误: {e}. 将使用空配置。", file=sys.stderr)
-            self.config_data = {} # JSON 格式错误，初始化为空字典
-        except Exception as e:
-            print(f"[WARNING] 无法加载配置文件 '{self.config_file}': {e}", file=sys.stderr)
-            self.config_data = {}
-
-    def get_root_folder(self):
-        """获取配置的根目录。如果不存在，则返回空字符串。"""
-        # 根据约定好的 JSON 结构 {"root_folder": "..."}
-        return self.config_data.get('root_folder', '').strip()
-
-    def set_root_folder(self, path):
-        """设置根目录并保存。"""
-        self.config_data['root_folder'] = path
-        self._save_config()
-
-    def _save_config(self):
-        """保存配置文件。"""
-        # 确保配置文件目录存在
-        config_dir = os.path.dirname(self.config_file)
-        if config_dir and not os.path.exists(config_dir):
-            try:
-                os.makedirs(config_dir, exist_ok=True)
-            except OSError as e:
-                messagebox.showerror("配置错误", f"无法创建配置目录 '{config_dir}': {e}")
-                return
-
-        try:
-            with open(self.config_file, 'w', encoding='utf-8') as f:
-                json.dump(self.config_data, f, indent=2, ensure_ascii=False) # 写入 JSON，并进行2空格缩进
-        except IOError as e:
-            messagebox.showerror("配置错误", f"无法保存配置文件 '{self.config_file}': {e}")
-
-class ClipboardMonitor:
-    """
-    使用 Win32 API 监听剪贴板变化的类。
-    当剪贴板内容变化时，将内容放入队列。
-    """
-    WM_CLIPBOARDUPDATE = 0x031D
-
-    def __init__(self, clipboard_queue):
-        self.clipboard_queue = clipboard_queue
-        self.hwnd = None
-        self.last_clipboard_data = None
-        self._stop_event = threading.Event()
-
-    def _create_window(self):
-        """创建一个隐藏窗口用于接收 Windows 消息。"""
-        wc = win32gui.WNDCLASS()
-        wc.lpfnWndProc = self._wnd_proc
-        wc.lpszClassName = "ClipboardMonitorClass"
-        wc.hInstance = win32gui.GetModuleHandle(None)
-        class_atom = win32gui.RegisterClass(wc)
-        
-        self.hwnd = win32gui.CreateWindowEx(
-            0, # dwExStyle
-            class_atom, # lpClassName
-            "ClipboardMonitor", # lpWindowName
-            0, # dwStyle (WS_POPUP is often 0, suitable for a message-only window) DO NOT delete this, it is important
-            0, 0, 0, 0, # x, y, nWidth, nHeight
-            win32con.HWND_MESSAGE, # hWndParent - **修正: 使用 HWND_MESSAGE 创建消息窗口**
-            0, # hMenu
-            wc.hInstance, # hInstance
-            None
-        )
-        win32gui.UpdateWindow(self.hwnd)
-
-    def _wnd_proc(self, hwnd, msg, wparam, lparam):
-        """窗口过程函数，处理 Windows 消息。"""
-        if msg == self.WM_CLIPBOARDUPDATE:
-            self._on_clipboard_update()
-        elif msg == win32con.WM_DESTROY:
-            win32gui.PostQuitMessage(0)
-        return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
-
-    def _on_clipboard_update(self):
-        """剪贴板内容更新时的回调。"""
-        clipboard_data = None
-        opened = False
-        try:
-            win32clipboard.OpenClipboard(self.hwnd) 
-            opened = True
-            if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
-                clipboard_data = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-                if clipboard_data:
-                    self.clipboard_queue.put(clipboard_data)
-                self.last_clipboard_data = clipboard_data
-        except pywintypes.error as e:
-            print(f"[ERROR] pywintypes.error when accessing clipboard: {e}", file=sys.stderr)
-        except Exception as e:
-            print(f"[ERROR] General error accessing clipboard: {e}", file=sys.stderr)
-        finally:
-            if opened:
-                try:
-                    win32clipboard.CloseClipboard()
-                except Exception as e:
-                    print(f"[ERROR] Error closing clipboard in finally: {e}", file=sys.stderr)
-
-
-    def start(self):
-        """启动剪贴板监听线程。"""
-        monitor_thread = threading.Thread(target=self._run_monitor)
-        monitor_thread.daemon = True
-        monitor_thread.start()
-
-    def _run_monitor(self):
-        """在独立线程中运行消息循环。"""
-        self._create_window()
-        ctypes.windll.user32.AddClipboardFormatListener(self.hwnd)
-        while not self._stop_event.is_set():
-            win32gui.PumpWaitingMessages()
-            time.sleep(0.01)
-
-        ctypes.windll.user32.RemoveClipboardFormatListener(self.hwnd)
-        win32gui.DestroyWindow(self.hwnd)
-        win32gui.UnregisterClass("ClipboardMonitorClass", win32gui.GetModuleHandle(None))
-
-    def stop(self):
-        """停止剪贴板监听。"""
-        self._stop_event.set()
-        if self.hwnd:
-            win32gui.PostMessage(self.hwnd, win32con.WM_CLOSE, 0, 0)
+# ConfigManager 类已移动到 config_manager.py 文件中。
+# ClipboardMonitor 类已移动到 clipboard_monitor.py 文件中。
 
 
 class AutoCodeApplier:
