@@ -1,5 +1,6 @@
 import threading
 import time
+import sys
 import ctypes
 import win32clipboard
 import win32con
