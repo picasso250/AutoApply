@@ -87,8 +87,8 @@ class AutoCodeApplier:
     """
     # 新的 CLIPBOARD_PATTERN：匹配 Markdown 风格的元数据标题和代码块
     CLIPBOARD_PATTERN = re.compile(
-        # 匹配元数据标题行：#### file: <path/filename.ext> (OVERWRITE|APPEND|DELETE)
-        r"^####\s*file:\s*(?P<filename>.*?)\s*\((?P<operation>OVERWRITE|APPEND|DELETE)\)\s*$"
+        # 匹配元数据标题行：#### file: <path/filename.ext> (OVERWRITE|APPEND|DELETE|CREATE)
+        r"^####\s*file:\s*(?P<filename>.*?)\s*\((?P<operation>OVERWRITE|APPEND|DELETE|CREATE)\)\s*$"
         r"\n^\s*```(?P<language>\w*)?\s*$" # 匹配代码块起始：```<language>
         r"\n(?P<content>.*?)"              # 懒惰匹配实际代码内容
         r"^\s*```\s*$",                    # 匹配代码块结束：```
@@ -293,7 +293,7 @@ class AutoCodeApplier:
     def _handle_clipboard_change(self, clipboard_content):
         """
         处理剪贴板内容变化的逻辑，现在支持一次性确认多个文件块的写入，
-        并在写入前检查内容是否与现有文件一致，并增加了追加和删除操作。
+        并在写入前检查内容是否与现有文件一致，并增加了追加、删除和创建操作。
         """
         if not clipboard_content:
             return
@@ -326,6 +326,53 @@ class AutoCodeApplier:
                     print(f"[INFO] 文件 '{filename}' 不存在，跳过删除操作。")
                     prompt_details.append(f"- '{filename}' (删除 - 文件不存在，已跳过)")
                 continue # 完成此匹配项的处理，进入下一个匹配
+
+            # --- 处理 CREATE 操作 ---
+            elif operation_type == "CREATE":
+                existing_content = ""
+                file_exists = os.path.exists(target_path) and os.path.isfile(target_path)
+
+                if file_exists:
+                    try:
+                        with open(target_path, 'r', encoding='utf-8') as f:
+                            existing_content = f.read().replace('\r\n', '\n').replace('\r', '\n')
+                    except Exception as e:
+                        print(f"[WARNING] 无法读取文件 '{target_path}' 进行比较 (CREATE 操作): {e}. 将视为新内容或空内容。", file=sys.stderr)
+                        existing_content = ""
+                    
+                    if code_content_normalized == existing_content.strip():
+                        print(f"文件 '{filename}' (CREATE) 内容与现有文件一致，跳过写入。")
+                        continue # 如果文件存在且内容一致，跳过
+                    else:
+                        # 文件存在但内容不同，CREATE 操作应询问是否覆盖
+                        confirmation = win32_askyesno(
+                            "文件已存在警告", 
+                            f"您尝试创建一个文件 '{filename}'，但该文件已存在且内容不同。\n"
+                            f"路径: '{target_path}'\n"
+                            f"是否要覆盖现有文件？\n"
+                            f"（取消将跳过此文件）"
+                        )
+                        if not confirmation:
+                            print(f"用户取消了 '{filename}' (CREATE) 操作，文件已存在且内容不同。")
+                            continue # 用户选择不覆盖，跳过此文件
+                        
+                        # 如果用户确认覆盖，则视为覆盖操作
+                        status = "覆盖 (CREATE 请求)"
+                        operation_for_log = "OVERWRITE_ON_CREATE"
+                else:
+                    status = "创建"
+                    operation_for_log = "CREATE"
+
+                files_to_write.append({
+                    'filename': filename,
+                    'code_content': code_content_normalized,
+                    'target_path': target_path,
+                    'target_dir': target_dir,
+                    'operation': operation_for_log # 存储实际执行的操作类型
+                })
+                prompt_details.append(f"- '{filename}' ({status}, 将写入到: '{target_path}')")
+                continue # 完成此匹配项的处理，进入下一个匹配
+
 
             # --- 处理 OVERWRITE 和 APPEND 操作 ---
             elif operation_type in ["OVERWRITE", "APPEND"]:
@@ -391,8 +438,10 @@ class AutoCodeApplier:
             prompt_message_parts.append(f"\n以下操作将被执行：\n{' \n'.join(prompt_details)}\n")
         
         prompt_message_parts.append("\n注意：")
-        if any(f['operation'] == "OVERWRITE" for f in files_to_write):
-            prompt_message_parts.append(" - 'OVERWRITE' 操作将覆盖现有文件内容。")
+        if any(f['operation'] == "CREATE" for f in files_to_write):
+            prompt_message_parts.append(" - 'CREATE' 操作将创建新文件。")
+        if any(f['operation'] == "OVERWRITE" for f in files_to_write) or any(f['operation'] == "OVERWRITE_ON_CREATE" for f in files_to_write):
+            prompt_message_parts.append(" - 'OVERWRITE' 或因 'CREATE' 请求导致的覆盖操作将覆盖现有文件内容。")
         if any(f['operation'] == "APPEND" for f in files_to_write):
             prompt_message_parts.append(" - 'APPEND' 操作将追加内容到现有文件末尾。")
         if files_to_delete:
@@ -410,7 +459,9 @@ class AutoCodeApplier:
                     os.makedirs(file_info['target_dir'], exist_ok=True)
                     with open(file_info['target_path'], 'w', encoding='utf-8') as f:
                         f.write(file_info['code_content'])
-                    print(f"文件 '{file_info['target_path']}' 已成功 {file_info['operation'].lower()}。")
+                    # 根据实际操作类型打印日志
+                    log_operation_type = file_info['operation'].replace("OVERWRITE_ON_CREATE", "CREATE (已覆盖)").lower()
+                    print(f"文件 '{file_info['target_path']}' 已成功 {log_operation_type}。")
                 except Exception as e:
                     messagebox.showerror(f"{file_info['operation']}失败", f"无法 {file_info['operation'].lower()} 文件 '{file_info['target_path']}': {e}")
             
