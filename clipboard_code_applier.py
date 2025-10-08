@@ -85,10 +85,10 @@ class AutoCodeApplier:
     """
     主应用程序逻辑，处理剪贴板内容，模式匹配，用户交互和文件写入。
     """
-    # 更新 CLIPBOARD_PATTERN：增加对中文指令的支持
+    # 更新 CLIPBOARD_PATTERN：增加对中文指令“修改”的支持
     CLIPBOARD_PATTERN = re.compile(
-        # 匹配元数据标题行：#### file: <path/filename.ext> (OVERWRITE|APPEND|DELETE|CREATE|覆盖|追加|删除|创建)
-        r"^####\s*file:\s*(?P<filename>.*?)\s*\((?P<operation>OVERWRITE|APPEND|DELETE|CREATE|覆盖|追加|删除|创建)\)\s*$"
+        # 匹配元数据标题行：#### file: <path/filename.ext> (OVERWRITE|APPEND|DELETE|CREATE|覆盖|追加|删除|创建|修改)
+        r"^####\s*file:\s*(?P<filename>.*?)\s*\((?P<operation>OVERWRITE|APPEND|DELETE|CREATE|覆盖|追加|删除|创建|修改)\)\s*$"
         r"\n^\s*```(?P<language>\w*)?\s*$" # 匹配代码块起始：```<language>
         r"\n(?P<content>.*?)"              # 懒惰匹配实际代码内容
         r"^\s*```\s*$",                    # 匹配代码块结束：```
@@ -317,7 +317,7 @@ class AutoCodeApplier:
             operation_type = ""
             if operation_raw.lower() in ['create', '创建']:
                 operation_type = "CREATE"
-            elif operation_raw.lower() in ['overwrite', '覆盖']:
+            elif operation_raw.lower() in ['overwrite', '覆盖', '修改']: # 增加“修改”
                 operation_type = "OVERWRITE"
             elif operation_raw.lower() in ['append', '追加']:
                 operation_type = "APPEND"
