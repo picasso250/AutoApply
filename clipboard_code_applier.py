@@ -85,14 +85,14 @@ class AutoCodeApplier:
     """
     主应用程序逻辑，处理剪贴板内容，模式匹配，用户交互和文件写入。
     """
-    # 新的 CLIPBOARD_PATTERN：匹配 Markdown 风格的元数据标题和代码块
+    # 更新 CLIPBOARD_PATTERN：增加对中文指令的支持
     CLIPBOARD_PATTERN = re.compile(
-        # 匹配元数据标题行：#### file: <path/filename.ext> (OVERWRITE|APPEND|DELETE|CREATE)
-        r"^####\s*file:\s*(?P<filename>.*?)\s*\((?P<operation>OVERWRITE|APPEND|DELETE|CREATE)\)\s*$"
+        # 匹配元数据标题行：#### file: <path/filename.ext> (OVERWRITE|APPEND|DELETE|CREATE|覆盖|追加|删除|创建)
+        r"^####\s*file:\s*(?P<filename>.*?)\s*\((?P<operation>OVERWRITE|APPEND|DELETE|CREATE|覆盖|追加|删除|创建)\)\s*$"
         r"\n^\s*```(?P<language>\w*)?\s*$" # 匹配代码块起始：```<language>
         r"\n(?P<content>.*?)"              # 懒惰匹配实际代码内容
         r"^\s*```\s*$",                    # 匹配代码块结束：```
-        re.MULTILINE | re.DOTALL | re.IGNORECASE # 添加 re.IGNORECASE
+        re.MULTILINE | re.DOTALL | re.IGNORECASE
     )
 
     def __init__(self):
@@ -309,7 +309,25 @@ class AutoCodeApplier:
 
         for match in matches:
             filename = match.group('filename').strip()
-            operation_type = match.group('operation').strip().upper() # 统一转换为大写以便比较
+            operation_raw = match.group('operation').strip() # 获取原始操作指令
+            
+            # --- 指令标准化 ---
+            # 将中文或英文指令统一映射为大写的英文指令，以便后续逻辑处理
+            # re.IGNORECASE 标志确保了 'overwrite', 'OVERWRITE' 等都会被正确处理
+            operation_type = ""
+            if operation_raw.lower() in ['create', '创建']:
+                operation_type = "CREATE"
+            elif operation_raw.lower() in ['overwrite', '覆盖']:
+                operation_type = "OVERWRITE"
+            elif operation_raw.lower() in ['append', '追加']:
+                operation_type = "APPEND"
+            elif operation_raw.lower() in ['delete', '删除']:
+                operation_type = "DELETE"
+            else:
+                # 如果匹配到未知指令（理论上不会，因为正则表达式限制了），则跳过
+                print(f"[WARNING] 检测到文件 '{filename}' 的未知操作类型 '{operation_raw}'，跳过此代码块。", file=sys.stderr)
+                continue
+
             code_content_raw = match.group('content').strip()
             # 标准化剪贴板内容的换行符
             code_content_normalized = code_content_raw.replace('\r\n', '\n').replace('\r', '\n')
@@ -420,6 +438,7 @@ class AutoCodeApplier:
                 prompt_details.append(f"- '{filename}' ({status}, 将{operation_type.lower()}到: '{target_path}')")
             
             else:
+                # 此处的 else 理论上不会被触发，因为前面已经做了指令标准化和检查
                 print(f"[WARNING] 检测到文件 '{filename}' 的未知操作类型 '{operation_type}'，跳过此代码块。", file=sys.stderr)
                 continue
 
