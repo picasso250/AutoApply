@@ -85,11 +85,14 @@ class AutoCodeApplier:
     """
     主应用程序逻辑，处理剪贴板内容，模式匹配，用户交互和文件写入。
     """
-    # 更新 CLIPBOARD_PATTERN：增加对中文指令“修改”的支持
+    # --- 正则表达式优化 ---
+    # 优化点：
+    # 1. 在指令行 `(...)` 和代码块起始符 ` ``` ` 之间使用 `\s*` 匹配任意空白字符（包括零个或多个空格、换行符）。
+    # 2. 这使得 `#### file: ...(...)``` ` (在同一行) 和 `#### file: ...(...)\n``` ` (换行) 两种格式都能被正确匹配。
     CLIPBOARD_PATTERN = re.compile(
         # 匹配元数据标题行：#### file: <path/filename.ext> (OVERWRITE|APPEND|DELETE|CREATE|覆盖|追加|删除|创建|修改)
-        r"^####\s*file:\s*(?P<filename>.*?)\s*\((?P<operation>OVERWRITE|APPEND|DELETE|CREATE|覆盖|追加|删除|创建|修改)\)\s*$"
-        r"\n^\s*```(?P<language>\w*)?\s*$" # 匹配代码块起始：```<language>
+        r"^####\s*file:\s*(?P<filename>.*?)\s*\((?P<operation>[^)]+)\)\s*"
+        r"```(?P<language>\w*)?\s*$" # 匹配代码块起始：```<language>
         r"\n(?P<content>.*?)"              # 懒惰匹配实际代码内容
         r"^\s*```\s*$",                    # 匹配代码块结束：```
         re.MULTILINE | re.DOTALL | re.IGNORECASE
