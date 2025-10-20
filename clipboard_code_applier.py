@@ -54,26 +54,54 @@ def win32_askyesno(title, message):
 
 def create_default_icon():
     """
-    创建一个简单的默认图标 (PIL Image)。
+    创建一个带有圆角红色背景和白色字母 "AP" 的图标。
     """
     width, height = 64, 64
-    image = Image.new('RGBA', (width, height), (255, 255, 255, 0)) # 透明背景
+    # 创建一个 RGBA 模式的图像，背景完全透明
+    image = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
+    
+    # 定义颜色
+    # 背景色：一种柔和、不刺眼的红色 (#D9534F)
+    background_color = (217, 83, 79, 255)
+    # 文本颜色：白色
+    text_color = (255, 255, 255, 255)
+    
+    # 绘制圆角矩形背景
+    # 使用 16px 的圆角半径
+    draw.rounded_rectangle(
+        (0, 0, width, height),
+        radius=16,
+        fill=background_color
+    )
+    
+    # 尝试加载字体
     try:
-        font = ImageFont.truetype("arial.ttf", 36)
+        # 字体大小可以适当调整以适应背景
+        font = ImageFont.truetype("arialbd.ttf", 38) # 使用 Arial Bold
     except IOError:
-        font = ImageFont.load_default()
+        try:
+            font = ImageFont.truetype("arial.ttf", 38)
+        except IOError:
+            font = ImageFont.load_default()
 
     text = "AP" # AutoApply
+    
+    # 使用 textbbox 计算文本精确边界框以实现完美居中
     text_bbox = draw.textbbox((0, 0), text, font=font)
     text_width = text_bbox[2] - text_bbox[0]
     text_height = text_bbox[3] - text_bbox[1]
     
+    # 计算文本绘制的起始位置 (x, y)
     x = (width - text_width) / 2
-    y = (height - text_height) / 2
+    # textbbox 返回的 y 坐标是基线位置，需要微调
+    y = (height - text_height) / 2 - text_bbox[1] 
     
-    draw.text((x, y), text, font=font, fill=(0, 0, 0, 255)) # 黑色文本
+    # 绘制文本
+    draw.text((x, y), text, font=font, fill=text_color)
+    
     return image
+
 
 # get_system_icon 函数已删除
 
